@@ -21,7 +21,7 @@ CACHE_FILE = Path("singapore_dengue_raw_records.csv")
 
 SEASONAL_PERIOD = 52
 FIXED_ORDER = (1, 1, 1)
-FIXED_SEASONAL_ORDER = (1, 1, 1, SEASONAL_PERIOD)
+FIXED_SEASONAL_ORDER = (0, 1, 1, SEASONAL_PERIOD)
 FORECAST_ALPHA = 0.2  # 80% interval
 RISK_Z = 1.2816
 
@@ -153,12 +153,6 @@ def build_weekly_dengue_series(records_df: pd.DataFrame) -> tuple[pd.DataFrame, 
     checks.append({"check": "duplicate_week_start", "value": int(weekly["week_start"].duplicated().sum()), "status": "PASS"})
     checks.append({"check": "negative_cases", "value": int((weekly["Total Dengue Cases"] < 0).sum()), "status": "PASS"})
 
-    q1 = weekly["Total Dengue Cases"].quantile(0.25)
-    q3 = weekly["Total Dengue Cases"].quantile(0.75)
-    iqr = q3 - q1
-    spike_cutoff = float(q3 + 3 * iqr)
-    spikes = weekly[weekly["Total Dengue Cases"] > spike_cutoff][["week_start", "Total Dengue Cases"]].head(12)
-
     return weekly[["week_start", "Dengue Fever", "Dengue Haemorrhagic Fever", "Total Dengue Cases", "moving_avg_12w"]], pd.DataFrame(checks)
 
 
@@ -202,7 +196,7 @@ def fit_fixed_sarima_and_forecast(weekly_df: pd.DataFrame, steps: int, alpha: fl
         seasonal_order=FIXED_SEASONAL_ORDER,
         enforce_stationarity=False,
         enforce_invertibility=False,
-    ).fit(method="lbfgs", maxiter=40, disp=False)
+    ).fit(method="lbfgs", maxiter=30, disp=False)
 
     forecast = sm_model.get_forecast(steps=steps)
     conf = forecast.conf_int(alpha=alpha)
@@ -328,46 +322,17 @@ def plot_future_forecast(weekly_df: pd.DataFrame, risk_df: pd.DataFrame, thresho
     return fig
 
 
-def plot_intervention_timeline(risk_df: pd.DataFrame):
-    work = risk_df.copy()
-    work["risk_level_num"] = work["risk_band"].map({"Low": 0, "Medium": 1, "High": 2}).fillna(0)
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=work["week_start"],
-            y=work["risk_level_num"],
-            mode="lines+markers",
-            line=dict(color="#1f77b4", width=3),
-            marker=dict(size=10),
-            customdata=np.stack([work["predicted_cases"], work["p_exceed_threshold"], work["risk_band"]], axis=1),
-            hovertemplate="Week=%{x}<br>Pred cases=%{customdata[0]:.1f}<br>P(exceed)=%{customdata[1]:.2f}<br>Risk=%{customdata[2]}<extra></extra>",
-            name="Risk level",
-        )
-    )
-
-    fig.update_yaxes(
-        tickvals=[0, 1, 2],
-        ticktext=["Low", "Medium", "High"],
-        title_text="Risk",
-        range=[-0.2, 2.2],
-    )
-    fig.update_xaxes(title_text="Week")
-    fig.update_layout(title="Wolbachia Intervention Timeline", height=420)
-    return fig
-
-
 def build_seasonal_profile(stl_df: pd.DataFrame) -> pd.DataFrame:
     tmp = stl_df.copy()
     tmp["month"] = pd.to_datetime(tmp["week_start"]).dt.month
     prof = tmp.groupby("month", as_index=False)["seasonal"].mean()
     prof["month_name"] = pd.to_datetime(prof["month"], format="%m").dt.strftime("%b")
-    prof["is_may_jun"] = prof["month"].isin([5, 6])
+    prof["is_peak_window"] = prof["month"].isin([5, 6, 7])
     return prof
 
 
 def plot_seasonal_profile(profile_df: pd.DataFrame):
-    colors = np.where(profile_df["is_may_jun"], "crimson", "steelblue")
+    colors = np.where(profile_df["is_peak_window"], "crimson", "steelblue")
     fig = go.Figure(go.Bar(x=profile_df["month_name"], y=profile_df["seasonal"], marker_color=colors, name="Avg STL seasonal"))
     fig.add_hline(y=0, line_dash="dot")
     fig.update_layout(title="Month-of-Year Seasonal Profile (STL)", xaxis_title="Month", yaxis_title="Average seasonal component", height=380)
@@ -378,7 +343,7 @@ def plot_seasonal_profile(profile_df: pd.DataFrame):
 # Sidebar
 # -----------------------------
 st.sidebar.title("NEA Controls")
-horizon = st.sidebar.selectbox("Future forecast horizon (weeks)", [2, 4, 8], index=1)
+horizon = st.sidebar.selectbox("Future forecast horizon (weeks)", [4, 8, 12], index=2)
 threshold = st.sidebar.number_input("Outbreak threshold", min_value=50, max_value=1000, value=150, step=10)
 
 sensitivity = st.sidebar.selectbox("Risk sensitivity", ["Conservative", "Balanced", "Aggressive"], index=1)
@@ -393,7 +358,7 @@ preseason_adjust = st.sidebar.toggle("Enable pre-season adjusted policy (Apr-Jul
 
 
 # -----------------------------
-# Pipeline (restored working flow)
+# Pipeline
 # -----------------------------
 st.title("NEA Wolbachia Intervention Dashboard")
 st.caption("SARIMA + STL dashboard for Wolbachia intervention planning. Data source: Singapore MOH weekly dengue cases.")
@@ -427,16 +392,14 @@ except Exception as exc:
 # -----------------------------
 # Header cards
 # -----------------------------
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3 = st.columns(3)
 col1.metric("Current risk band", rec["current_risk"])
 col2.metric("Recommended action", rec["action"])
-week_text = rec["recommended_week"].date().isoformat() if pd.notna(rec["recommended_week"]) else "N/A"
-col3.metric("Recommended week", week_text)
-col4.metric("Seasonal uplift (Apr-Jul)", "ON" if rec["in_watch_window"] else "OFF")
+col3.metric("Model confidence", f"{rec['confidence']:.2f}")
 
 st.info(
-    f"Confidence={rec['confidence']:.2f} | STL seasonal strength={seasonal_strength:.2f} | "
-    f"Current trend slope={trend_slope_now:.2f} | Fixed SARIMA={FIXED_ORDER}x{FIXED_SEASONAL_ORDER}"
+    f"STL seasonal strength={seasonal_strength:.2f} | "
+    f"Current trend slope={trend_slope_now:.2f} | SARIMA={FIXED_ORDER}x{FIXED_SEASONAL_ORDER}"
 )
 st.write(rec["reason"])
 
@@ -453,10 +416,7 @@ st.plotly_chart(plot_stl(stl_df), use_container_width=True)
 st.markdown("## 3) SARIMA Forecast (Last 1 Year Context)")
 st.plotly_chart(plot_future_forecast(weekly_df, risk_df, threshold=threshold), use_container_width=True)
 
-st.markdown("## 4) Wolbachia Intervention Timeline")
-st.plotly_chart(plot_intervention_timeline(risk_df), use_container_width=True)
-
-st.markdown("## 5) Seasonal Profile (Operational Insight)")
+st.markdown("## 4) Seasonal Profile (Operational Insight)")
 st.plotly_chart(plot_seasonal_profile(seasonal_profile_df), use_container_width=True)
 
 with st.expander("QA + Diagnostics"):
@@ -465,6 +425,38 @@ with st.expander("QA + Diagnostics"):
     st.write("### QA checks")
     st.dataframe(qa_df, use_container_width=True)
 
+with st.expander("Appendix: How to Read This Dashboard"):
+    st.markdown("""
+### 1) What is a risk signal?
+A risk signal is the model-estimated probability that weekly dengue cases will exceed the selected threshold.
+
+### 2) How risk is quantified
+- `p_exceed_threshold`: probability that forecasted weekly cases exceed the threshold (default 150).
+- Risk bands:
+  - Low: probability < lower cutoff
+  - Medium: lower cutoff <= probability < upper cutoff
+  - High: probability >= upper cutoff
+- Default (Balanced) cutoffs:
+  - Low < 0.30
+  - Medium 0.30 to < 0.60
+  - High >= 0.60
+
+### 3) Recommendation logic shown in the header
+The recommendation combines:
+- forecast risk in the next few weeks, and
+- STL trend slope direction.
+
+### 4) How to read each chart
+- Weekly Dengue Cases: historical level and 12-week moving average.
+- STL Decomposition: observed, trend, seasonal, and residual components.
+- SARIMA Forecast: next-week projections with confidence interval and threshold line.
+- Seasonal Profile: average STL seasonal component by month (May/June highlighted).
+
+### 5) Important note on dates
+If your source data is historical (for example ending in 2022), all recommendations are relative to that last available week.
+""")
+
 # Run:
 # & C:/Users/davin/anaconda3/python.exe -m streamlit run "C:/Users/davin/OneDrive/Documents/Python stuffs/nea_wolbachia_dashboard.py"
+
 
