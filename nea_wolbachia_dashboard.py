@@ -344,7 +344,7 @@ def plot_seasonal_profile(profile_df: pd.DataFrame):
 # -----------------------------
 st.sidebar.title("NEA Controls")
 horizon = st.sidebar.selectbox("Future forecast horizon (weeks)", [4, 8, 12], index=2)
-threshold = st.sidebar.number_input("Outbreak threshold", min_value=50, max_value=1000, value=150, step=10)
+threshold = st.sidebar.number_input("Outbreak threshold", min_value=50, max_value=1000, value=400, step=10)
 
 sensitivity = st.sidebar.selectbox("Risk sensitivity", ["Conservative", "Balanced", "Aggressive"], index=1)
 if sensitivity == "Conservative":
@@ -458,5 +458,6 @@ If your source data is historical (for example ending in 2022), all recommendati
 
 # Run:
 # & C:/Users/davin/anaconda3/python.exe -m streamlit run "C:/Users/davin/OneDrive/Documents/Python stuffs/nea_wolbachia_dashboard.py"
+
 
 
